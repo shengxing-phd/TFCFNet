@@ -1,13 +1,5 @@
 import torch
 import torch.nn as nn
-# from thop import profile
-# import torchstat
-# import torchsummary
-# from thop import profile
-# from TCN import TemporalConvNet
-# from FANLayer import FANLayer
-# from KAN import KAN
-# from StarNet import StarNet
 import ptwt
 import numpy as np
 
@@ -46,7 +38,7 @@ def Wavelet_for_Period(x, scale=16):
     return coeffs, freqs
 
 
-# 无参注意力
+
 class SimAM(torch.nn.Module):
     def __init__(self, channels=None, e_lambda=1e-4):
         super(SimAM, self).__init__()
@@ -192,7 +184,6 @@ class WaveFFT(nn.Module):
             x = x.unsqueeze(1)
         if x.dim() != 3:
             raise ValueError(f"Expected input tensor to be 3D, but got {x.dim()}D tensor instead.")
-        # 小波变换分支
         x_wave = x
         coeffs = Wavelet_for_Period(x_wave.permute(0, 2, 1), 1)[0].permute(1, 2, 0, 3).float()  # 96,36,8,1
         # wavelet_res = self.period_conv(coeffs)  # 96,36,8,1
@@ -220,12 +211,3 @@ class WaveFFT(nn.Module):
 
         x = self.fc(x[:, -1, :])
         return x
-
-
-if __name__ == "__main__":
-    model = WaveFFT()
-    # torchstat.stat(model, (96, 36))
-    # torchsummary.summary(model, input_size=[(96, 36)], device="cpu")
-    flops, params = profile(model, inputs=(torch.randn(1, 96, 36)))
-    print('Flops: % .4fG' % (flops / 1000000000))  # 计算量
-    print('params参数量: % .4fM' % (params / 1000000))
