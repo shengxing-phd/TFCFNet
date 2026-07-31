@@ -1,35 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import ptwt
 import numpy as np
-
-
-class Inception_Block_V1(nn.Module):
-    def __init__(self, in_channels, out_channels, num_kernels=1, init_weight=True):
-        super(Inception_Block_V1, self).__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.num_kernels = num_kernels
-        kernels = []
-        for i in range(self.num_kernels):
-            kernels.append(nn.Conv2d(in_channels, out_channels, kernel_size=2 * i + 1, padding=i))
-        self.kernels = nn.ModuleList(kernels)
-        if init_weight:
-            self._initialize_weights()
-
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-    def forward(self, x):
-        res_list = []
-        for i in range(self.num_kernels):
-            res_list.append(self.kernels[i](x))
-        res = torch.stack(res_list, dim=-1).mean(-1)
-        return res
 
 
 def Wavelet_for_Period(x, scale=16):
@@ -38,176 +11,135 @@ def Wavelet_for_Period(x, scale=16):
     return coeffs, freqs
 
 
-
 class SimAM(torch.nn.Module):
     def __init__(self, channels=None, e_lambda=1e-4):
         super(SimAM, self).__init__()
-
-        self.activaton = nn.Sigmoid()
+        self.activation = nn.Sigmoid()
         self.e_lambda = e_lambda
-
-    def __repr__(self):
-        s = self.__class__.__name__ + '('
-        s += ('lambda=%f)' % self.e_lambda)
-        return s
-
-    @staticmethod
-    def get_module_name():
-        return "simam"
 
     def forward(self, x):
         b, c, h, w = x.size()
-
         n = w * h - 1
-
         x_minus_mu_square = (x - x.mean(dim=[2, 3], keepdim=True)).pow(2)
         y = x_minus_mu_square / (4 * (x_minus_mu_square.sum(dim=[2, 3], keepdim=True) / n + self.e_lambda)) + 0.5
+        return x * self.activation(y)
 
-        return x * self.activaton(y)
-
-
-class WaveFFT(nn.Module):
+class TFCFNet(nn.Module):
     def __init__(self, input_size=36, cnn_channels=96, output_size=3):
-        # def __init__(self, input_size, cnn_channels, output_size):
-        super(WaveFFT, self).__init__()
-        self.cnn1 = nn.Sequential(
-            nn.Conv1d(in_channels=input_size, out_channels=cnn_channels, kernel_size=3, padding='same'),
+        super(TFCFNet, self).__init__()
+
+        self.conv3 = nn.Sequential(nn.Conv1d(input_size, cnn_channels, kernel_size=3, padding='same'),
+                                   nn.BatchNorm1d(cnn_channels), nn.ReLU())
+        self.conv32 = nn.Sequential(nn.Conv1d(cnn_channels, cnn_channels, kernel_size=32, padding='same'),
+                                    nn.BatchNorm1d(cnn_channels), nn.ReLU())
+
+        self.conv5 = nn.Sequential(nn.Conv1d(input_size, cnn_channels, kernel_size=5, padding='same'),
+                                   nn.BatchNorm1d(cnn_channels), nn.ReLU())
+        self.conv16 = nn.Sequential(nn.Conv1d(cnn_channels, cnn_channels, kernel_size=16, padding='same'),
+                                    nn.BatchNorm1d(cnn_channels), nn.ReLU())
+
+        self.conv7 = nn.Sequential(nn.Conv1d(input_size, cnn_channels, kernel_size=7, padding='same'),
+                                   nn.BatchNorm1d(cnn_channels), nn.ReLU())
+        self.conv8 = nn.Sequential(nn.Conv1d(cnn_channels, cnn_channels, kernel_size=8, padding='same'),
+                                   nn.BatchNorm1d(cnn_channels), nn.ReLU())
+
+        self.conv1 = nn.Sequential(nn.Conv1d(input_size, cnn_channels, kernel_size=1, padding='same'),
+                                   nn.BatchNorm1d(cnn_channels), nn.ReLU())
+
+
+        self.mstfe_reduce = nn.Sequential(
+            nn.Conv1d(cnn_channels * 4, cnn_channels, kernel_size=1, padding='same'),
             nn.BatchNorm1d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(p=0.5, inplace=False)
+            nn.ReLU()
         )
-        self.cnn2 = nn.Sequential(
-            nn.Conv1d(in_channels=input_size, out_channels=cnn_channels, kernel_size=5, padding='same'),
-            nn.BatchNorm1d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(p=0.5, inplace=False)
-        )
-        self.cnn3 = nn.Sequential(
-            nn.Conv1d(in_channels=input_size, out_channels=cnn_channels, kernel_size=7, padding='same'),
-            nn.BatchNorm1d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(p=0.5, inplace=False)
-        )
-        self.cnn4 = nn.Sequential(
-            nn.Conv1d(in_channels=input_size, out_channels=cnn_channels, kernel_size=1, padding='same'),
-            nn.BatchNorm1d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(p=0.5, inplace=False)
-        )
-        self.cnn1_1 = nn.Sequential(
-            nn.Conv1d(in_channels=cnn_channels, out_channels=cnn_channels, kernel_size=32, padding='same'),
-            nn.BatchNorm1d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(p=0.5, inplace=False)
-        )
-        self.cnn2_1 = nn.Sequential(
-            nn.Conv1d(in_channels=cnn_channels, out_channels=cnn_channels, kernel_size=16, padding='same'),
-            nn.BatchNorm1d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(p=0.5, inplace=False)
-        )
-        self.cnn3_1 = nn.Sequential(
-            nn.Conv1d(in_channels=cnn_channels, out_channels=cnn_channels, kernel_size=8, padding='same'),
-            nn.BatchNorm1d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(p=0.5, inplace=False)
-        )
-        self.adapool = nn.AdaptiveMaxPool1d(3)
-        self.conv2d = nn.Sequential(
-            nn.Conv2d(input_size, cnn_channels, 3, 1, 1),
-            nn.BatchNorm2d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(0.5, inplace=False),
-            nn.Conv2d(cnn_channels, cnn_channels * 2, 3, 1, 1),
-            nn.BatchNorm2d(cnn_channels * 2),
-            nn.ReLU(),
-            nn.Dropout(0.5, inplace=False),
-            nn.Conv2d(cnn_channels * 2, cnn_channels * 4, 3, 1, 1),
-            nn.BatchNorm2d(cnn_channels * 4),
-            nn.ReLU(),
-            nn.Dropout(0.5, inplace=False),
-            nn.Conv2d(input_size, cnn_channels, 3, 1, 1),
-            nn.BatchNorm2d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(0.5, inplace=False),
-            nn.Conv2d(cnn_channels * 4, cnn_channels * 8, 3, 1, 1),
-            nn.BatchNorm2d(cnn_channels * 8),
-            nn.ReLU(),
-            nn.Dropout(0.5, inplace=False),
-        )
+
         self.dw_cnn = nn.Sequential(
-            # dw
             nn.Conv2d(input_size, cnn_channels, 3, 1, 1, groups=6, bias=False),
-            nn.BatchNorm2d(cnn_channels),
-            nn.ReLU(),
-            # pw
+            nn.BatchNorm2d(cnn_channels), nn.ReLU(),
             nn.Conv2d(cnn_channels, cnn_channels * 2, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(cnn_channels * 2),
-            nn.ReLU(),
-            # simam
+            nn.BatchNorm2d(cnn_channels * 2), nn.ReLU(),
             SimAM(),
-            # dw
+
             nn.Conv2d(cnn_channels * 2, cnn_channels * 2, 3, 1, 1, groups=6, bias=False),
-            nn.BatchNorm2d(cnn_channels * 2),
-            nn.ReLU(),
-            # pw
+            nn.BatchNorm2d(cnn_channels * 2), nn.ReLU(),
             nn.Conv2d(cnn_channels * 2, cnn_channels * 4, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(cnn_channels * 4),
-            nn.ReLU(),
-            # simam
+            nn.BatchNorm2d(cnn_channels * 4), nn.ReLU(),
             SimAM(),
-            # dw
+
             nn.Conv2d(cnn_channels * 4, cnn_channels * 4, 3, 1, 1, groups=6, bias=False),
-            nn.BatchNorm2d(cnn_channels * 4),
-            nn.ReLU(),
-            # pw
+            nn.BatchNorm2d(cnn_channels * 4), nn.ReLU(),
             nn.Conv2d(cnn_channels * 4, cnn_channels * 8, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(cnn_channels * 8),
-            nn.ReLU(),
-            # simam
+            nn.BatchNorm2d(cnn_channels * 8), nn.ReLU(),
             SimAM(),
         )
-        self.scale_conv = nn.Conv2d(
-            in_channels=cnn_channels * 8,
-            out_channels=cnn_channels,
-            kernel_size=(8, 1),
-            stride=1,
-            padding=(0, 0),
-            groups=2)
-        # self.complex_weight = nn.Parameter(torch.randn(input_size, 2, dtype=torch.float32) * 0.02)
-        # self.starnet = StarNet(base_dim=input_size, num_classes=output_size)
-        # self.tcn = TemporalConvNet(input_size, [1, 2, 4])
+        self.scale_conv = nn.Conv2d(cnn_channels * 8, cnn_channels, kernel_size=(8, 1), stride=1, padding=(0, 0),
+                                    groups=2)
+
+        self.aap = nn.AdaptiveAvgPool1d(1)
+        self.gelu = nn.GELU()
+
+        self.t_reshape = nn.Conv1d(cnn_channels, cnn_channels, kernel_size=1)
+        self.t_bn = nn.BatchNorm1d(cnn_channels)
+        self.f_reshape = nn.Conv1d(cnn_channels, cnn_channels, kernel_size=1)
+        self.f_bn = nn.BatchNorm1d(cnn_channels)
+
+        self.fc_alpha = nn.Linear(1, 1)
+        self.fc_beta = nn.Linear(1, 1)
+
+        self.t_filter_conv = nn.Conv1d(cnn_channels, cnn_channels, kernel_size=1)
+        self.f_filter_conv = nn.Conv1d(cnn_channels, cnn_channels, kernel_size=1)
+
+        self.final_bn = nn.BatchNorm1d(cnn_channels)
+        self.final_conv = nn.Conv1d(cnn_channels, cnn_channels, kernel_size=1)
+
         self.fc = nn.Linear(cnn_channels, output_size)
 
     def forward(self, x):
         if x.dim() == 2:
             x = x.unsqueeze(1)
-        if x.dim() != 3:
-            raise ValueError(f"Expected input tensor to be 3D, but got {x.dim()}D tensor instead.")
-        x_wave = x
-        coeffs = Wavelet_for_Period(x_wave.permute(0, 2, 1), 1)[0].permute(1, 2, 0, 3).float()  # 96,36,8,1
-        # wavelet_res = self.period_conv(coeffs)  # 96,36,8,1
-        # wavelet_res = self.scale_conv(wavelet_res).squeeze(2).permute(0, 2, 1)  # 96,1,96
-        wave = self.dw_cnn(coeffs)  # 96,768,8,1
-        wavelet_res = self.scale_conv(wave).squeeze(2).permute(0, 2, 1)
-        x = x.permute(0, 2, 1)
-        x1 = self.cnn4(x)
-        x2 = self.cnn1(x)
-        x3 = self.cnn2(x)
-        x4 = self.cnn3(x)
-        x2_2 = self.cnn1_1(x2)
-        x3_1 = x2_2 + x3
-        x3_3 = self.cnn2_1(x3_1)
-        x4_1 = x3_3 + x4
-        x4_4 = self.cnn3_1(x4_1)
-        x4_4 = x4_4 + x1  # 96,96,1
 
-        x_out = torch.cat([x2_2 + x3_3 + x4_4], dim=1)
-        # print(x_out.shape)
-        # print(wavelet_res.shape)
-        # x = (1 - 0.86 ** 10) * wavelet_res + (0.86 ** 10) * x_cnn
-        # x = 0.78 * wavelet_res + 0.22 * x_out
-        x = 0.8 * wavelet_res + 0.2 * x_out
+        
+        coeffs, _ = Wavelet_for_Period(x, 1)
 
-        x = self.fc(x[:, -1, :])
-        return x
+        coeffs = coeffs.permute(1, 2, 0, 3).float()
+
+        wave = self.dw_cnn(coeffs)  
+
+        f_feat = self.scale_conv(wave).squeeze(2)
+
+        x_1 = self.conv32(self.conv3(x))
+        x_2_1 = self.conv5(x)
+        x_2 = self.conv16(x_1 + x_2_1)
+
+        x_3_1 = self.conv7(x)
+        x_3 = self.conv8(x_3_1 + x_2)
+
+        x_4 = self.conv1(x) + x_3
+
+        t_feat = torch.cat([x_1, x_2, x_3, x_4], dim=1)  
+        t_feat = self.mstfe_reduce(t_feat) 
+
+        t_pooled = self.aap(t_feat)
+        t_res = self.t_reshape(self.gelu(self.t_bn(t_pooled)))
+
+        f_pooled = self.aap(f_feat)
+        f_res = self.f_reshape(self.gelu(self.f_bn(f_pooled)))
+
+        s = F.cosine_similarity(t_res, f_res, dim=1)
+
+        alpha = torch.sigmoid(self.fc_alpha(s)).unsqueeze(-1)
+        beta = torch.sigmoid(self.fc_beta(s)).unsqueeze(-1)
+
+        sum_weights = alpha + beta + 1e-8
+        alpha = alpha / sum_weights
+        beta = beta / sum_weights
+
+        t_filter = torch.sigmoid(self.t_filter_conv(t_res)) * t_feat
+        f_filter = torch.sigmoid(self.f_filter_conv(f_res)) * f_feat
+
+        f_fusion = alpha * t_filter + beta * f_filter
+
+        f_final = self.final_conv(self.gelu(self.final_bn(f_fusion))) * f_fusion
+
+        out = self.fc(f_final[:, :, -1])
+        return out
